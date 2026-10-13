@@ -1,0 +1,7 @@
+# Transcripts, translations and audio of films: copyrighted, and personal viewing data.
+work/
+models/
+.venv/
+__pycache__/
+*.wav
+*.part
