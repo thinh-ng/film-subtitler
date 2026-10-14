@@ -1,7 +1,7 @@
 """End-to-end: video on an SSH-reachable media server -> .ai.vi.srt / .ai.en.srt next to it.
 
 Usage: NAS_HOST=user@host python run.py "/media/Movies/X/X.mkv" [--language ko]
-                     [--context recap.txt] [--stage all|transcribe|translate]
+                     [--context recap.txt] [--series address.json] [--stage all|transcribe|translate]
 Splitting stages lets the next film transcribe (CPU) while this one translates (LLM).
 """
 import argparse
@@ -68,6 +68,7 @@ def main():
     parser.add_argument("video")
     parser.add_argument("--language")
     parser.add_argument("--context")
+    parser.add_argument("--series")
     parser.add_argument("--stage", default="all", choices=["all", "transcribe", "translate", "prefetch"])
     args = parser.parse_args()
     if not NAS_HOST:
@@ -105,6 +106,8 @@ def main():
         command = [PYTHON, "translate.py", lines, prefix]
         if args.context:
             command += ["--context", args.context]
+        if args.series:
+            command += ["--series", args.series]
         subprocess.run(command, check=True)
         upload(f"{prefix}.vi.srt", args.video, ".ai.vi.srt")
         upload(f"{prefix}.en.srt", args.video, ".ai.en.srt")

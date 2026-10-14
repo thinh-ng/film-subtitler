@@ -69,7 +69,10 @@ Needs: the `claude` CLI logged in, ssh access to `NAS_HOST` (with ffmpeg install
 ## Outputs in `work/`
 
 - `*.bible.json` — what the LLM understood about the film. Read this first when a translation looks off.
-- `*.lines.json` — every line with speaker, addressee, pronoun pair and translations.
+- `*.lines.json` — the transcript: timed lines and voice labels.
+- `*.subs.json` — every line with speaker, addressee, pronoun pair and translations.
+- `<series>.address.json` — with `--series`, each pair's default form of address, carried from
+  one episode to the next.
 - `*.report.txt` — pronoun changes to double-check.
 
 ## Limits

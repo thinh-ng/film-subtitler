@@ -1,8 +1,10 @@
 """Timed lines -> film bible -> context-aware Vietnamese (and English) subtitles.
 
-Usage: python translate.py <lines.json> <out_prefix> [--context notes.txt]
+Usage: python translate.py <lines.json> <out_prefix> [--context notes.txt] [--series address.json]
 --context adds background the dialogue cannot give (e.g. a recap of earlier episodes).
-Writes <out_prefix>.bible.json, .lines.json, .vi.srt, .en.srt, .report.txt
+--series carries each pair's default form of address from one episode to the next; it is read
+before the bible is built and updated right after.
+Writes <out_prefix>.bible.json, .subs.json, .vi.srt, .en.srt, .report.txt
 Re-running resumes: the bible and finished chunks are cached next to the outputs.
 """
 import argparse
@@ -79,8 +81,10 @@ BIBLE_SCHEMA = {
             "properties": {"voice": {"type": "string"}, "character": {"type": "string"},
                            "confidence": {"type": "string"}}}},
         "address": {"type": "array", "items": {"type": "object",
-            "required": ["from", "to", "self_term", "other_term", "from_line", "to_line", "why"],
+            "required": ["from", "to", "self_term", "other_term", "from_line", "to_line", "why",
+                         "default"],
             "properties": {"from": {"type": "string"}, "to": {"type": "string"},
+                           "default": {"type": "boolean"},
                            "self_term": {"type": "string"}, "other_term": {"type": "string"},
                            "from_line": {"type": "integer"}, "to_line": {"type": "integer"},
                            "why": {"type": "string"}}}},
@@ -138,10 +142,14 @@ def fmt(line):
     return f'{line["id"]} [{m:02d}:{s:02d}] {line["voice"]}: {line["text"]}'
 
 
-def build_bible(lines, language, context):
+def build_bible(lines, language, context, defaults):
     source = LANGUAGE_NAMES.get(language, language)
     transcript = "\n".join(fmt(l) for l in lines)
     extra = f"\nBACKGROUND PROVIDED BY THE USER (trust it):\n{context}\n" if context else ""
+    if defaults:
+        extra += ("\nESTABLISHED FORMS OF ADDRESS from earlier episodes of this series. Each is that "
+                  "direction's default; keep it unless this episode shows a lasting change in the "
+                  "relationship, and say so in `why`:\n" + json.dumps(defaults, ensure_ascii=False) + "\n")
     prompt = f"""Below is an automatic transcript of a film's dialogue, detected as {source}. Each
 line is `id [mm:ss] voice: text`. The transcript has recognition errors; infer what was meant. Some
 lines may be in another language (a character switching languages); they get translated too.
@@ -160,6 +168,8 @@ Vietnamese and English will rely on.
    self-term and other-term the speaker uses (e.g. bố/con, anh/em, tôi/ông, cháu/bác, tao/mày).
    Choose by age, kinship, intimacy, politeness, power and hostility. When the relationship or the
    speaker's perception of it changes, add separate entries with line ranges and explain in `why`.
+   Mark exactly one entry per direction `default`: the form the pair normally uses. A heated or
+   one-off moment is its own non-default entry covering only those lines.
    {SOURCE_GUIDANCE.get(language, "")}
 4. scenes: consecutive line ranges per scene, a one-sentence summary, and who is present.
    A conversation keeps the same participants until there is positive evidence of a change: the
@@ -326,11 +336,29 @@ def consistency_report(lines):
     return report
 
 
+def load_defaults(path):
+    if not path or not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_defaults(path, defaults, bible):
+    """This episode's default for a direction replaces the series one; other directions are kept."""
+    merged = {(d["from"], d["to"]): d for d in defaults}
+    for a in bible["address"]:
+        if a["default"]:
+            merged[(a["from"], a["to"])] = {k: a[k] for k in ("from", "to", "self_term", "other_term", "why")}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(list(merged.values()), f, ensure_ascii=False, indent=1)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("lines")
     parser.add_argument("prefix")
     parser.add_argument("--context")
+    parser.add_argument("--series")
     args = parser.parse_args()
 
     with open(args.lines, encoding="utf-8") as f:
@@ -346,9 +374,12 @@ def main():
             bible = json.load(f)
     else:
         print(f"Pass 1: building film bible from {len(lines)} {language} lines...", flush=True)
-        bible = build_bible(lines, language, context)
+        defaults = load_defaults(args.series)
+        bible = build_bible(lines, language, context, defaults)
         with open(bible_path, "w", encoding="utf-8") as f:
             json.dump(bible, f, ensure_ascii=False, indent=1)
+        if args.series:
+            save_defaults(args.series, defaults, bible)
     print(f"  {len(bible['characters'])} characters, {len(bible['scenes'])} scenes, "
           f"{len(bible['notes'])} notes", flush=True)
 
@@ -363,7 +394,7 @@ def main():
         for l in lines:
             l["en"] = l["text"]
 
-    with open(f"{args.prefix}.lines.json", "w", encoding="utf-8") as f:
+    with open(f"{args.prefix}.subs.json", "w", encoding="utf-8") as f:
         json.dump(lines, f, ensure_ascii=False, indent=1)
     notes = {n["line"]: n for n in bible["notes"]}
     write_srt(f"{args.prefix}.vi.srt", lines, "vi", notes)
