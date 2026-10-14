@@ -18,6 +18,11 @@ CONTEXT_LINES = 15
 PARALLEL_CALLS = 8
 # Usage limits on the subscription can last minutes to hours; wait rather than fail the film.
 RETRY_WAITS = [30, 120, 300, 900, 1800, 3600]
+MIN_CUE_SECONDS = 1.0
+# A line followed this quickly would only flash on screen; it shares a cue with the next one.
+PAIR_SECONDS = 0.7
+MAX_CUE_TEXTS = 2
+NOTE_SECONDS = 4.0
 
 LANGUAGE_NAMES = {"en": "English", "ko": "Korean", "ja": "Japanese", "zh": "Mandarin Chinese",
                   "yue": "Cantonese", "no": "Norwegian", "nn": "Norwegian", "de": "German",
@@ -43,6 +48,9 @@ SUBTITLE_CRAFT = """Subtitle craft rules:
 - Translate meaning, intent and tone, never word-for-word. Max ~84 characters per subtitle;
   condense if needed — viewers must read it in the time the line is spoken.
 - Slang, idioms, swearing: use the natural Vietnamese equivalent at the same intensity.
+- Figurative or joking phrasing is translated by what it means between the two characters.
+  Vocabulary that asserts a relationship (romantic, sexual, kinship) is used only when the bible
+  gives the pair that relationship; a borrowed one is rendered as a joke between them.
 - Jokes and wordplay: rebuild the joke with a Vietnamese equivalent that gets the same reaction.
   If that is impossible, keep the meaning; keep a foreign word as-is when Vietnamese viewers would
   know it or it is a brand, title or name.
@@ -154,11 +162,15 @@ Vietnamese and English will rely on.
    speaker's perception of it changes, add separate entries with line ranges and explain in `why`.
    {SOURCE_GUIDANCE.get(language, "")}
 4. scenes: consecutive line ranges per scene, a one-sentence summary, and who is present.
+   A conversation keeps the same participants until there is positive evidence of a change: the
+   new speaker is named or addressed, someone greets or hands over, the scene cuts, or a voice
+   label maps to them with high confidence. Topic, apparent location and low-confidence voice
+   labels are not evidence; a phone call is one conversation.
 5. register: tone and style guidance — genre, era, dialects, how characters speak (crude,
    formal, jargon-heavy), running jokes or catchphrases and how to render them consistently.
 6. glossary: names, places, recurring terms, jargon, slang and catchphrases with the Vietnamese
    and English rendering to use everywhere, and why when the choice is not obvious.
-7. notes: on-screen explanatory notes, shown at the top of the screen. Use them SPARINGLY — only
+7. notes: on-screen explanatory notes, shown in brackets under the subtitle. Use them SPARINGLY — only
    for a term a viewer would genuinely not understand that matters to the scene (technical,
    historical, cultural). Never for jokes, slang or anything the translation itself can carry.
    Each term at most once, on the line where it first matters; roughly no more than one note per
@@ -221,6 +233,10 @@ FOLLOWING LINES (context only, do not translate):
 
 For EVERY line to translate, in order:
 - speaker: the character speaking. Voice labels are hints only; trust the dialogue flow and bible.
+  A conversation keeps the same participants until there is positive evidence of a change: the
+  new speaker is named or addressed, someone greets or hands over, the scene cuts, or a voice
+  label maps to them with high confidence. Topic, apparent location and low-confidence voice
+  labels are not evidence; a phone call is one conversation.
 - addressee: who they are speaking to (may differ from the previous speaker; "self", "group" or
   "unknown" are allowed).
 - pair: the Vietnamese self-term/other-term used, from the bible's `address` for that direction
@@ -250,19 +266,49 @@ def srt_time(seconds):
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def write_srt(path, lines, key, notes):
+def build_cues(lines, key, notes):
+    """Non-overlapping cues: players stack overlapping cues and shuffle them as each one ends.
+
+    A line followed within PAIR_SECONDS by the next shares one cue with it as a dialogue pair. A
+    note rides as an extra line on every cue that starts within NOTE_SECONDS of its line.
+    """
     cues = []
+    for l in sorted(lines, key=lambda l: l["start"]):
+        text = l.get(key, "").strip()
+        if not text:
+            continue
+        if cues and l["start"] - cues[-1]["start"] < PAIR_SECONDS and len(cues[-1]["texts"]) < MAX_CUE_TEXTS:
+            cue = cues[-1]
+            cue["texts"].append(text)
+            cue["speakers"].append(l.get("speaker"))
+            cue["end"] = max(cue["end"], l["end"])
+        else:
+            cues.append({"start": l["start"], "end": l["end"], "texts": [text],
+                         "speakers": [l.get("speaker")], "notes": []})
     for l in lines:
-        if l.get(key, "").strip():
-            # Keep short lines on screen long enough to read.
-            cues.append((l["start"], max(l["end"], l["start"] + 1.0), l[key].strip()))
         note = notes.get(l["id"], {}).get(key, "").strip()
-        if note:
-            # {\an8} places the cue at the top so it never covers the dialogue subtitle.
-            cues.append((l["start"], l["start"] + 5.0, "{\\an8}" + note))
+        for cue in cues:
+            if note and l["start"] - PAIR_SECONDS < cue["start"] < l["start"] + NOTE_SECONDS:
+                cue["notes"].append(note)
+    for cue, following in zip(cues, cues[1:] + [None]):
+        # Keep short lines on screen long enough to read, but never past the next cue.
+        cue["end"] = max(cue["end"], cue["start"] + MIN_CUE_SECONDS)
+        if following:
+            cue["end"] = min(cue["end"], following["start"])
+    return cues
+
+
+def cue_text(cue):
+    # Dialogue dashes mark a change of speaker; one speaker's two fragments just stack.
+    one_voice = len(set(cue["speakers"])) == 1
+    texts = cue["texts"] if one_voice else [f"- {t}" for t in cue["texts"]]
+    return "\n".join(texts + [f"<i>({n})</i>" for n in dict.fromkeys(cue["notes"])])
+
+
+def write_srt(path, lines, key, notes):
     with open(path, "w", encoding="utf-8") as f:
-        for n, (start, end, text) in enumerate(sorted(cues, key=lambda c: c[0]), 1):
-            f.write(f"{n}\n{srt_time(start)} --> {srt_time(end)}\n{text}\n\n")
+        for n, cue in enumerate(build_cues(lines, key, notes), 1):
+            f.write(f"{n}\n{srt_time(cue['start'])} --> {srt_time(cue['end'])}\n{cue_text(cue)}\n\n")
 
 
 def consistency_report(lines):

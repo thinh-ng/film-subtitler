@@ -15,11 +15,13 @@ line. This tool reads the film first, the way a human subtitler watches it first
 video (on the NAS)
   │  1. Listen      speech → timed text in the original language, plus a rough
   │                 "which voice is this" label per line            (local, CPU)
-  │                 • surround audio: only the centre (dialogue) channel is used, so music
-  │                   and songs don't bury soft voices
+  │                 • surround audio: the centre (dialogue) channel is transcribed first, so
+  │                   music and songs don't bury soft voices; speech mixed elsewhere (recaps,
+  │                   teasers) is then taken from the full mix
   │                 • speech the first pass skipped (soft voices, a line in another
   │                   language) is found and transcribed again, in its own language;
-  │                   low-confidence lines get the same language check
+  │                   low-confidence lines get the same language check; a short burst
+  │                   with no words at all is kept only when recognised with high confidence
   │                 • spots where speech recognition got stuck repeating itself are
   │                   redone with a slower, more accurate model
   ▼
@@ -41,8 +43,9 @@ Translation style:
 
 - Meaning and tone over literal wording. Slang, idioms and jokes get Vietnamese equivalents.
 - Honorifics and speech levels (Korean, Japanese, German du/Sie...) feed the pronoun choice.
-- Hard technical or cultural terms occasionally get a short note at the **top** of the screen,
-  kept rare so the screen stays clean.
+- Hard technical or cultural terms occasionally get a short note in brackets under the subtitle,
+  kept rare so the screen stays clean. Cues never overlap; lines spoken in quick succession share
+  one cue.
 - The LLM is given no title or synopsis for films: context comes from the dialogue alone. For a TV
   episode you can pass a recap of earlier episodes (`--context`).
 

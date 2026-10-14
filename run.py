@@ -23,26 +23,37 @@ def slug(video_path):
     return re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_")[:60]
 
 
-def extract_audio(video_path, wav_path):
+def pull_audio(video_path, filter_args, wav_path):
     # Decodes only the first audio track on the Pi, so just 16 kHz mono crosses the network.
+    command = f'ffmpeg -loglevel error -i "{video_path}" -map 0:a:0 -vn {filter_args} -ar 16000 -f wav -'
+    with open(wav_path, "wb") as out:
+        subprocess.run(["ssh", NAS_HOST, command], stdout=out, check=True)
+
+
+def extract_audio(video_path, wav_path, mix_path):
+    """Centre channel to wav_path; for surround, also the full downmix to mix_path."""
     probe = f'ffprobe -v error -select_streams a:0 -show_entries stream=channels -of csv=p=0 "{video_path}"'
     channels = int(subprocess.run(["ssh", NAS_HOST, probe], capture_output=True, text=True, check=True).stdout)
-    # Surround mixes keep dialogue alone in the centre channel; music on the others was being
-    # transcribed as dialogue and drowning out soft voices.
-    mix = "-af 'pan=mono|c0=c2'" if channels >= 6 else "-ac 1"
-    command = f'ffmpeg -loglevel error -i "{video_path}" -map 0:a:0 -vn {mix} -ar 16000 -f wav -'
-    # Write to a temp name so a half-pulled file is never mistaken for a finished prefetch.
+    # Write to a temp name so a half-pulled file is never mistaken for a finished prefetch;
+    # the centre file is renamed last, so its presence means both are complete.
     partial = wav_path + ".part"
-    with open(partial, "wb") as out:
-        subprocess.run(["ssh", NAS_HOST, command], stdout=out, check=True)
+    if channels >= 6:
+        # Recaps, teasers and some scenes are mixed outside the centre channel.
+        pull_audio(video_path, "-ac 1", partial)
+        os.replace(partial, mix_path)
+        # Surround mixes keep dialogue alone in the centre channel; music on the others was being
+        # transcribed as dialogue and drowning out soft voices.
+        pull_audio(video_path, "-af 'pan=mono|c0=c2'", partial)
+    else:
+        pull_audio(video_path, "-ac 1", partial)
     os.replace(partial, wav_path)
 
 
 def prefetch(video_path):
     """Pull a later film's audio while the CPU is busy transcribing the current one."""
-    wav = os.path.join(WORK_DIR, slug(video_path) + ".wav")
-    if not os.path.exists(wav) and not os.path.exists(wav + ".part"):
-        extract_audio(video_path, wav)
+    prefix = os.path.join(WORK_DIR, slug(video_path))
+    if not os.path.exists(f"{prefix}.wav") and not os.path.exists(f"{prefix}.wav.part"):
+        extract_audio(video_path, f"{prefix}.wav", f"{prefix}.mix.wav")
 
 
 def upload(local_path, video_path, suffix):
@@ -64,7 +75,7 @@ def main():
 
     os.makedirs(WORK_DIR, exist_ok=True)
     prefix = os.path.join(WORK_DIR, slug(args.video))
-    wav, lines = f"{prefix}.wav", f"{prefix}.lines.json"
+    wav, mix, lines = f"{prefix}.wav", f"{prefix}.mix.wav", f"{prefix}.lines.json"
 
     if args.stage == "prefetch":
         prefetch(args.video)
@@ -75,12 +86,16 @@ def main():
             time.sleep(5)
         if not os.path.exists(wav):
             print(f"[{slug(args.video)}] extracting audio", flush=True)
-            extract_audio(args.video, wav)
+            extract_audio(args.video, wav, mix)
         command = [PYTHON, "transcribe.py", wav, lines]
         if args.language:
             command += ["--language", args.language]
+        if os.path.exists(mix):
+            command += ["--mix", mix]
         subprocess.run(command, check=True)
         os.remove(wav)
+        if os.path.exists(mix):
+            os.remove(mix)
         # Cached translations are keyed by line numbers, which a new transcript reshuffles.
         shutil.rmtree(f"{prefix}.cache", ignore_errors=True)
         if os.path.exists(f"{prefix}.bible.json"):

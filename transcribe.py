@@ -1,7 +1,8 @@
 """Audio -> timed lines with anonymous voice clusters.
 
-Usage: python transcribe.py <audio.wav> <out.json> [--language ko]
-Language is auto-detected when omitted.
+Usage: python transcribe.py <audio.wav> <out.json> [--language ko] [--mix full_mix.wav]
+Language is auto-detected when omitted. --mix is the full downmix of a surround track whose
+<audio.wav> is the centre channel; speech mixed outside the centre is taken from it.
 """
 import argparse
 import json
@@ -35,6 +36,11 @@ BATCH_SIZE = max(1, min(16, (os.cpu_count() or 2) // 2))
 # More sensitive than faster-whisper's default (0.5) so quiet voices count as speech.
 HOLE_VAD = VadOptions(threshold=0.3, min_silence_duration_ms=500, speech_pad_ms=200)
 MIN_HOLE_SECONDS = 1.5
+# Whisper writes a word for a sniff or a door as readily as for a short reply; on wordless bursts
+# real speech scored 0.83+, noise 0.56 or less.
+MIN_SHORT_CONFIDENCE = 0.7
+# Speech found only in the full mix sits under music and effects, so it needs firmer evidence.
+MIN_MIX_CONFIDENCE = 0.6
 # Mean word confidence below which a line may be another language rendered in the main one.
 DOUBTFUL_CONFIDENCE = 0.65
 # Chinese varieties are confused with each other on short clips; keep the film's own.
@@ -54,8 +60,9 @@ def transcribe(model, audio, language):
     return words, info.language
 
 
-def as_word(w, offset=0.0):
-    return {"start": w.start + offset, "end": w.end + offset, "text": w.word, "p": w.probability}
+def as_word(w, offset=0.0, source="centre"):
+    return {"start": w.start + offset, "end": w.end + offset, "text": w.word, "p": w.probability,
+            "source": source}
 
 
 def is_looped(text):
@@ -104,9 +111,11 @@ def split_into_lines(words, language):
     lines, current = [], []
 
     def flush():
+        from_mix = sum(x["source"] == "mix" for x in current) * 2 > len(current)
         lines.append({"start": current[0]["start"], "end": current[-1]["end"],
                       "text": "".join(x["text"] for x in current).strip(),
-                      "p": sum(x["p"] for x in current) / len(current)})
+                      "p": sum(x["p"] for x in current) / len(current),
+                      "source": "mix" if from_mix else "centre"})
 
     for i, w in enumerate(words):
         current.append(w)
@@ -122,7 +131,7 @@ def split_into_lines(words, language):
     return lines
 
 
-def assign_voices(audio, lines):
+def assign_voices(audio_by_source, lines):
     encoder = EncoderClassifier.from_hparams(
         source="speechbrain/spkrec-ecapa-voxceleb", run_opts={"device": "cpu"},
         savedir="models/ecapa",
@@ -131,6 +140,7 @@ def assign_voices(audio, lines):
     embeddings = []
     with torch.no_grad():
         for i in embeddable:
+            audio = audio_by_source[lines[i]["source"]]
             chunk = audio[int(lines[i]["start"] * SAMPLE_RATE): int(lines[i]["end"] * SAMPLE_RATE)]
             emb = encoder.encode_batch(torch.from_numpy(chunk).unsqueeze(0)).squeeze().numpy()
             embeddings.append(emb / np.linalg.norm(emb))
@@ -144,20 +154,27 @@ def assign_voices(audio, lines):
 
 
 def find_holes(audio, words):
-    """Stretches the speech detector hears as voice but the main pass wrote no words for."""
+    """Stretches the speech detector hears as voice but the main pass wrote no words for.
+
+    Returns (holes, bursts): gaps of MIN_HOLE_SECONDS or more, and shorter speech regions that
+    have no words at all.
+    """
     steps_per_second = 10
     covered = np.zeros(len(audio) * steps_per_second // SAMPLE_RATE + 1, bool)
     for w in words:
         covered[max(0, int(w["start"] * steps_per_second) - 3): int(w["end"] * steps_per_second) + 3] = True
-    holes = []
+    holes, bursts = [], []
     for region in get_speech_timestamps(audio, HOLE_VAD):
         a = region["start"] * steps_per_second // SAMPLE_RATE
         b = region["end"] * steps_per_second // SAMPLE_RATE
+        if b > a and not covered[a:b].any() and (b - a) / steps_per_second < MIN_HOLE_SECONDS:
+            bursts.append((region["start"] / SAMPLE_RATE, region["end"] / SAMPLE_RATE))
+            continue
         gaps = np.flatnonzero(np.diff(np.concatenate(([1], covered[a:b], [1])).astype(int)))
         for gap_start, gap_end in zip(gaps[::2], gaps[1::2]):
             if (gap_end - gap_start) / steps_per_second >= MIN_HOLE_SECONDS:
                 holes.append(((a + gap_start) / steps_per_second, (a + gap_end) / steps_per_second))
-    return holes
+    return holes, bursts
 
 
 def group_holes(holes, max_gap):
@@ -191,10 +208,12 @@ def detect_languages(model, audio, groups, main_language):
     return languages
 
 
-def transcribe_spans(model, audio, groups, language):
+def transcribe_spans(model, audio, groups, language, source="centre", min_confidence=0.0):
     """Transcribe each group whole for context, keeping only words that land inside its spans.
 
     Packing spans into shared windows was faster but recovered a third as many words.
+    A segment's words inside the spans are dropped together when their mean probability is
+    below min_confidence.
     """
     clips = [{"start": g[0][0], "end": g[-1][1]} for g in groups]
     spans = [span for g in groups for span in g]
@@ -207,17 +226,25 @@ def transcribe_spans(model, audio, groups, language):
         # Whisper's own test for "this was not speech"; holes are often music or breathing.
         if seg.no_speech_prob > 0.6 and seg.avg_logprob < -1.0 or is_looped(seg.text):
             continue
-        found.extend(as_word(w) for w in seg.words if any(s <= (w.start + w.end) / 2 <= e for s, e in spans))
+        inside = [w for w in seg.words if any(s <= (w.start + w.end) / 2 <= e for s, e in spans)]
+        if inside and sum(w.probability for w in inside) / len(inside) >= min_confidence:
+            found.extend(as_word(w, source=source) for w in inside)
     return found
 
 
-def fill_holes(model, audio, words, main_language):
+def fill_holes(model, audio, words, main_language, source="centre", min_confidence=0.0):
     """Transcribe speech the main pass skipped: another language, a soft voice, overlapping talk.
 
     Whisper told to expect one language often writes nothing for speech in another, so holes get
-    their own language detection.
+    their own language detection. Short wordless bursts are too short to tell a language from and
+    are transcribed in the main one.
     """
-    holes = find_holes(audio, words)
+    holes, bursts = find_holes(audio, words)
+    if bursts:
+        found = transcribe_spans(model, audio, group_holes(bursts, max_gap=3), main_language, source,
+                                 max(min_confidence, MIN_SHORT_CONFIDENCE))
+        print(f"Checked {len(bursts)} short wordless bursts ({source}): kept {len(found)} words", flush=True)
+        words = sorted(words + found, key=lambda w: w["start"])
     if not holes:
         return words
     started = time.time()
@@ -236,9 +263,10 @@ def fill_holes(model, audio, words, main_language):
         by_language.setdefault(language_of[hole], []).append(hole)
     by_language = {lang: group_holes(hs, max_gap=3) for lang, hs in by_language.items()}
     summary = ", ".join(f"{lang} {sum(len(g) for g in groups)}" for lang, groups in by_language.items())
-    print(f"Filling {len(holes)} holes ({sum(e - s for s, e in holes) / 60:.1f} min): {summary}", flush=True)
+    print(f"Filling {len(holes)} holes ({source}, {sum(e - s for s, e in holes) / 60:.1f} min): {summary}",
+          flush=True)
     for language, groups in by_language.items():
-        words.extend(transcribe_spans(model, audio, groups, language))
+        words.extend(transcribe_spans(model, audio, groups, language, source, min_confidence))
     print(f"  filled in {time.time() - started:.0f}s", flush=True)
     words.sort(key=lambda w: w["start"])
     return words
@@ -274,21 +302,32 @@ def main():
     parser.add_argument("audio")
     parser.add_argument("out")
     parser.add_argument("--language")
+    parser.add_argument("--mix")
     args = parser.parse_args()
 
     audio, sr = sf.read(args.audio, dtype="float32")
     assert sr == SAMPLE_RATE, "audio must be 16 kHz mono"
+    audio_by_source = {"centre": audio}
     print("Transcribing...", flush=True)
     model = WhisperModel("large-v3-turbo", device="cpu", compute_type="int8", cpu_threads=os.cpu_count())
     words, language = transcribe(model, audio, args.language)
     words = fill_holes(model, audio, words, language)
     words = recheck_doubtful(model, audio, words, language)
     words = repair_loops(audio, words, language)
+    if args.mix:
+        mix, sr = sf.read(args.mix, dtype="float32")
+        assert sr == SAMPLE_RATE, "mix must be 16 kHz mono"
+        audio_by_source["mix"] = mix
+        # After loop repair, which re-transcribes from the centre channel and would erase these.
+        words = fill_holes(model, mix, words, language, "mix", MIN_MIX_CONFIDENCE)
     lines = split_into_lines(words, language)
     for line in lines:
         del line["p"]
-    print(f"{len(lines)} lines ({language}). Clustering voices...", flush=True)
-    assign_voices(audio, lines)
+    print(f"{len(lines)} lines ({language}, {sum(l['source'] == 'mix' for l in lines)} from the full mix). "
+          "Clustering voices...", flush=True)
+    assign_voices(audio_by_source, lines)
+    for line in lines:
+        del line["source"]
     for n, line in enumerate(lines, 1):
         line["id"] = n
     with open(args.out, "w", encoding="utf-8") as f:
