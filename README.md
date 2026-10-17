@@ -22,8 +22,9 @@ video (on the NAS)
   │                   language) is found and transcribed again, in its own language;
   │                   low-confidence lines get the same language check; a short burst
   │                   with no words at all is kept only when recognised with high confidence
-  │                 • spots where speech recognition got stuck repeating itself are
-  │                   redone with a slower, more accurate model
+  │                 • spots where speech recognition got stuck repeating itself, and speech
+  │                   the fast model still left empty, are redone with a slower, more
+  │                   accurate model
   ▼
   │  2. Understand  the LLM reads the WHOLE transcript once and writes a film bible:
   │                 who each character is, how they relate, which Vietnamese pronoun
@@ -36,18 +37,33 @@ video (on the NAS)
   ▼
   │  4. Check       flag every place a pronoun pair changes so a human can confirm it
   ▼
-<video>.ai.vi.srt  <video>.ai.en.srt   next to the video, ready for Jellyfin / Plex
+<video>.vi.srt  <video>.en.srt           next to the video, ready for Jellyfin / Plex
 ```
 
 Translation style:
 
 - Meaning and tone over literal wording. Slang, idioms and jokes get Vietnamese equivalents.
 - Honorifics and speech levels (Korean, Japanese, German du/Sie...) feed the pronoun choice.
-- Hard technical or cultural terms occasionally get a short note in brackets under the subtitle,
-  kept rare so the screen stays clean. Cues never overlap; lines spoken in quick succession share
-  one cue.
 - The LLM is given no title or synopsis for films: context comes from the dialogue alone. For a TV
   episode you can pass a recap of earlier episodes (`--context`).
+
+## Subtitle standards
+
+Numbers follow Netflix's [Vietnamese](https://partnerhelp.netflixstudios.com/hc/en-us/articles/220447048-Vietnamese-Timed-Text-Style-Guide)
+and [general](https://partnerhelp.netflixstudios.com/hc/en-us/articles/215758617) timed-text guides.
+
+| Rule | Value |
+|---|---|
+| Reading speed | 17 characters per second, spaces and punctuation included |
+| Line length | 42 characters, 2 lines at most; long text breaks at the most balanced space, bottom line longer, after punctuation when possible |
+| Cue duration | 5/6 s minimum, 7 s maximum, 2 frames between cues |
+| Fast speech | Each line is translated within the characters its time on screen allows. A cue stays up past the speech until it can be read; when the next line comes too soon, the two share a cue |
+| Long sentences | Cut at a comma or pause, never leaving a word or two stranded; each subtitle carries only what that part of the speech says |
+| Speakers | Cues never overlap. Two speakers in one cue get a dash each |
+| Notes | Rare, for terms a viewer would not otherwise understand. Shown on their own at the top of the screen for 6 s (or longer if needed to read them), independent of the dialogue |
+| Songs | A song a character performs in the story is translated, in italics. Background songs show as ♪ |
+| Pronouns | anh/chị means the addressee is older or senior; a clearly younger adult is cậu/cô |
+| Encoding | UTF-8 with a byte-order mark, so players don't misread Vietnamese |
 
 ## Usage
 
@@ -81,4 +97,8 @@ Needs: the `claude` CLI logged in, ssh access to `NAS_HOST` (with ffmpeg install
 - Voice labelling is rough; the LLM fixes most of it from dialogue flow, crowded scenes suffer.
 - Speech recognition is weaker for Cantonese and heavy dialects, and invents phrases over music.
   The LLM drops lines that are clearly not dialogue, so check films with long music passages.
-- Song lyrics are shown as ♪, not translated.
+- Background songs are shown as ♪, not translated.
+- Whispered and mumbled speech is often missed. Spans the fast model leaves empty get a second try
+  with full large-v3, which recovers some but not all.
+- Notes use the SRT top-of-screen tag `{\an8}`; a player that ignores it shows the note stacked
+  above the dialogue instead.

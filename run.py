@@ -1,10 +1,12 @@
-"""End-to-end: video on an SSH-reachable media server -> .ai.vi.srt / .ai.en.srt next to it.
+"""End-to-end: video on an SSH-reachable media server -> .vi.srt / .en.srt next to it.
 
 Usage: NAS_HOST=user@host python run.py "/media/Movies/X/X.mkv" [--language ko]
                      [--context recap.txt] [--series address.json] [--stage all|transcribe|translate]
 Splitting stages lets the next film transcribe (CPU) while this one translates (LLM).
 """
 import argparse
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -15,6 +17,8 @@ import time
 # The machine holding the videos, as `user@host` for ssh; it needs ffmpeg.
 NAS_HOST = os.environ.get("NAS_HOST")
 WORK_DIR = "work"
+# Checksums of every subtitle uploaded, so an upload never replaces one from elsewhere.
+UPLOADED = os.path.join(WORK_DIR, "uploaded.json")
 PYTHON = sys.executable
 
 
@@ -56,10 +60,28 @@ def prefetch(video_path):
         extract_audio(video_path, f"{prefix}.wav", f"{prefix}.mix.wav")
 
 
+def remote_md5(path):
+    result = subprocess.run(["ssh", NAS_HOST, f'[ -f "{path}" ] && md5sum < "{path}" || true'],
+                            capture_output=True, text=True, check=True)
+    return result.stdout[:32] or None
+
+
 def upload(local_path, video_path, suffix):
+    """Writes <video><suffix>, refusing to replace a subtitle this pipeline did not upload."""
     remote = os.path.splitext(video_path)[0] + suffix
+    uploaded = set()
+    if os.path.exists(UPLOADED):
+        with open(UPLOADED, encoding="utf-8") as f:
+            uploaded = set(json.load(f))
+    existing = remote_md5(remote)
+    if existing and existing not in uploaded:
+        sys.exit(f"Not overwriting {remote}: it was not made by this pipeline")
     with open(local_path, "rb") as f:
         subprocess.run(["ssh", NAS_HOST, f'cat > "{remote}"'], stdin=f, check=True)
+    with open(local_path, "rb") as f:
+        uploaded.add(hashlib.md5(f.read()).hexdigest())
+    with open(UPLOADED, "w", encoding="utf-8") as f:
+        json.dump(sorted(uploaded), f, indent=1)
     print(f"  uploaded {remote}")
 
 
@@ -109,8 +131,8 @@ def main():
         if args.series:
             command += ["--series", args.series]
         subprocess.run(command, check=True)
-        upload(f"{prefix}.vi.srt", args.video, ".ai.vi.srt")
-        upload(f"{prefix}.en.srt", args.video, ".ai.en.srt")
+        upload(f"{prefix}.vi.srt", args.video, ".vi.srt")
+        upload(f"{prefix}.en.srt", args.video, ".en.srt")
 
 
 if __name__ == "__main__":

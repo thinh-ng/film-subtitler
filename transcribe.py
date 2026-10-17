@@ -5,6 +5,7 @@ Language is auto-detected when omitted. --mix is the full downmix of a surround 
 <audio.wav> is the centre channel; speech mixed outside the centre is taken from it.
 """
 import argparse
+import functools
 import json
 import os
 import re
@@ -23,6 +24,7 @@ MAX_CUE_SECONDS = 6.0
 MAX_CUE_CHARS = {"default": 84, "cjk": 32}
 CJK_LANGUAGES = {"zh", "yue", "ja", "ko"}
 SENTENCE_ENDS = ".?!。？！"
+CLAUSE_ENDS = ",;:、，；：—–"
 # Lines shorter than this give unreliable voice embeddings; the LLM decides their speaker.
 MIN_EMBED_SECONDS = 0.8
 # Cosine distance; lower = more speakers. Untuned starting point.
@@ -36,6 +38,7 @@ BATCH_SIZE = max(1, min(16, (os.cpu_count() or 2) // 2))
 # More sensitive than faster-whisper's default (0.5) so quiet voices count as speech.
 HOLE_VAD = VadOptions(threshold=0.3, min_silence_duration_ms=500, speech_pad_ms=200)
 MIN_HOLE_SECONDS = 1.5
+MAX_HOLE_SECONDS = 25.0
 # Whisper writes a word for a sniff or a door as readily as for a short reply; on wordless bursts
 # real speech scored 0.83+, noise 0.56 or less.
 MIN_SHORT_CONFIDENCE = 0.7
@@ -45,6 +48,12 @@ MIN_MIX_CONFIDENCE = 0.6
 DOUBTFUL_CONFIDENCE = 0.65
 # Chinese varieties are confused with each other on short clips; keep the film's own.
 SAME_LANGUAGE = [{"zh", "yue"}]
+
+
+@functools.cache
+def accurate_model():
+    """Full large-v3: several times slower than turbo, so only for spans turbo got wrong or missed."""
+    return WhisperModel("large-v3", device="cpu", compute_type="int8", cpu_threads=os.cpu_count())
 
 
 def transcribe(model, audio, language):
@@ -93,7 +102,7 @@ def repair_loops(audio, words, language):
         return words
     total = sum(e - s for s, e in windows)
     print(f"Repairing {len(windows)} looped spans ({total / 60:.1f} min) with large-v3...", flush=True)
-    model = WhisperModel("large-v3", device="cpu", compute_type="int8", cpu_threads=os.cpu_count())
+    model = accurate_model()
     for start, end in windows:
         chunk = audio[int(start * SAMPLE_RATE): int(end * SAMPLE_RATE)]
         segments, _ = model.transcribe(chunk, language=language, word_timestamps=True,
@@ -105,16 +114,27 @@ def repair_loops(audio, words, language):
     return words
 
 
+def best_cut(words):
+    """Where to cut an over-long line: after a comma or at the longest pause, in its later two
+    thirds, so neither part is a stranded word or two."""
+
+    def score(k):
+        after_clause = words[k - 1]["text"].strip()[-1:] in CLAUSE_ENDS
+        return after_clause + (words[k]["start"] - words[k - 1]["end"]) + k / len(words) / 10
+
+    return max(range(max(1, len(words) // 3), len(words)), key=score)
+
+
 def split_into_lines(words, language):
     """Cut at sentence ends, long pauses, or cue size limits so each line is one speaker turn."""
     max_chars = MAX_CUE_CHARS["cjk" if language in CJK_LANGUAGES else "default"]
     lines, current = [], []
 
-    def flush():
-        from_mix = sum(x["source"] == "mix" for x in current) * 2 > len(current)
-        lines.append({"start": current[0]["start"], "end": current[-1]["end"],
-                      "text": "".join(x["text"] for x in current).strip(),
-                      "p": sum(x["p"] for x in current) / len(current),
+    def flush(part):
+        from_mix = sum(x["source"] == "mix" for x in part) * 2 > len(part)
+        lines.append({"start": part[0]["start"], "end": part[-1]["end"],
+                      "text": "".join(x["text"] for x in part).strip(),
+                      "p": sum(x["p"] for x in part) / len(part),
                       "source": "mix" if from_mix else "centre"})
 
     for i, w in enumerate(words):
@@ -123,11 +143,15 @@ def split_into_lines(words, language):
         next_gap = words[i + 1]["start"] - w["end"] if i + 1 < len(words) else 99
         sentence_end = w["text"].strip()[-1:] in SENTENCE_ENDS
         too_big = current[-1]["end"] - current[0]["start"] > MAX_CUE_SECONDS or len(text) > max_chars
-        if sentence_end or next_gap > 0.7 or too_big:
-            flush()
+        if sentence_end or next_gap > 0.7:
+            flush(current)
             current = []
+        elif too_big and len(current) > 1:
+            cut = best_cut(current)
+            flush(current[:cut])
+            current = current[cut:]
     if current:
-        flush()
+        flush(current)
     return lines
 
 
@@ -173,8 +197,16 @@ def find_holes(audio, words):
         gaps = np.flatnonzero(np.diff(np.concatenate(([1], covered[a:b], [1])).astype(int)))
         for gap_start, gap_end in zip(gaps[::2], gaps[1::2]):
             if (gap_end - gap_start) / steps_per_second >= MIN_HOLE_SECONDS:
-                holes.append(((a + gap_start) / steps_per_second, (a + gap_end) / steps_per_second))
+                holes.extend(split_span((a + gap_start) / steps_per_second, (a + gap_end) / steps_per_second))
     return holes, bursts
+
+
+def split_span(start, end):
+    """Whisper hears 30 s at a time; a longer hole came back as 30 s of words all stamped at its
+    start. Cut it into equal pieces that each fit."""
+    pieces = int(np.ceil((end - start) / MAX_HOLE_SECONDS))
+    step = (end - start) / pieces
+    return [(start + k * step, start + (k + 1) * step) for k in range(pieces)]
 
 
 def group_holes(holes, max_gap):
@@ -312,6 +344,8 @@ def main():
     model = WhisperModel("large-v3-turbo", device="cpu", compute_type="int8", cpu_threads=os.cpu_count())
     words, language = transcribe(model, audio, args.language)
     words = fill_holes(model, audio, words, language)
+    # Soft and mumbled speech turbo still left empty gets one more try with the stronger model.
+    words = fill_holes(accurate_model(), audio, words, language)
     words = recheck_doubtful(model, audio, words, language)
     words = repair_loops(audio, words, language)
     if args.mix:
