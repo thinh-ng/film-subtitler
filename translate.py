@@ -306,12 +306,13 @@ TRANSCRIPT:
 def make_chunks(lines, bible):
     """Group by scene so each call sees whole conversations, splitting overly long scenes."""
     by_id = {l["id"]: l for l in lines}
-    chunks = []
+    chunks, covered = [], set()
     for scene in sorted(bible["scenes"], key=lambda s: s["start_line"]):
-        ids = [i for i in range(scene["start_line"], scene["end_line"] + 1) if i in by_id]
+        # The LLM's scenes can overlap; a line translated twice could come out two ways.
+        ids = [i for i in range(scene["start_line"], scene["end_line"] + 1) if i in by_id and i not in covered]
+        covered.update(ids)
         for k in range(0, len(ids), MAX_CHUNK_LINES):
             chunks.append({"ids": ids[k:k + MAX_CHUNK_LINES], "scene": scene})
-    covered = {i for c in chunks for i in c["ids"]}
     missing = [l["id"] for l in lines if l["id"] not in covered]
     for k in range(0, len(missing), MAX_CHUNK_LINES):
         chunks.append({"ids": missing[k:k + MAX_CHUNK_LINES], "scene": None})
