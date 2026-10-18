@@ -594,7 +594,8 @@ def main():
     print(f"Pass 2: translating {len(chunks)} chunks...", flush=True)
     with ThreadPoolExecutor(PARALLEL_CALLS) as pool:
         results = list(pool.map(lambda c: translate_chunk(c, lines, bible, language, cache_dir), chunks))
-    by_id = {r["id"]: r for chunk in results for r in chunk}
+    # A chunk's answer can also translate its context lines, which belong to another chunk.
+    by_id = {r["id"]: r for chunk, result in zip(chunks, results) for r in result if r["id"] in chunk["ids"]}
     for l in lines:
         l.update({k: v for k, v in by_id[l["id"]].items() if k != "id"})
     if language == "en":
