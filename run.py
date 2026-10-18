@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -29,14 +30,14 @@ def slug(video_path):
 
 def pull_audio(video_path, filter_args, wav_path):
     # Decodes only the first audio track on the Pi, so just 16 kHz mono crosses the network.
-    command = f'ffmpeg -loglevel error -i "{video_path}" -map 0:a:0 -vn {filter_args} -ar 16000 -f wav -'
+    command = f'ffmpeg -loglevel error -i {shlex.quote(video_path)} -map 0:a:0 -vn {filter_args} -ar 16000 -f wav -'
     with open(wav_path, "wb") as out:
         subprocess.run(["ssh", NAS_HOST, command], stdout=out, check=True)
 
 
 def extract_audio(video_path, wav_path, mix_path):
     """Centre channel to wav_path; for surround, also the full downmix to mix_path."""
-    probe = f'ffprobe -v error -select_streams a:0 -show_entries stream=channels -of csv=p=0 "{video_path}"'
+    probe = f'ffprobe -v error -select_streams a:0 -show_entries stream=channels -of csv=p=0 {shlex.quote(video_path)}'
     channels = int(subprocess.run(["ssh", NAS_HOST, probe], capture_output=True, text=True, check=True).stdout)
     # Write to a temp name so a half-pulled file is never mistaken for a finished prefetch;
     # the centre file is renamed last, so its presence means both are complete.
@@ -66,7 +67,8 @@ def prefetch(video_path):
 
 
 def remote_md5(path):
-    result = subprocess.run(["ssh", NAS_HOST, f'[ -f "{path}" ] && md5sum < "{path}" || true'],
+    quoted = shlex.quote(path)
+    result = subprocess.run(["ssh", NAS_HOST, f"[ -f {quoted} ] && md5sum < {quoted} || true"],
                             capture_output=True, text=True, check=True)
     return result.stdout[:32] or None
 
@@ -82,7 +84,7 @@ def upload(local_path, video_path, suffix):
     if existing and existing not in uploaded:
         sys.exit(f"Not overwriting {remote}: it was not made by this pipeline")
     with open(local_path, "rb") as f:
-        subprocess.run(["ssh", NAS_HOST, f'cat > "{remote}"'], stdin=f, check=True)
+        subprocess.run(["ssh", NAS_HOST, f"cat > {shlex.quote(remote)}"], stdin=f, check=True)
     with open(local_path, "rb") as f:
         uploaded.add(hashlib.md5(f.read()).hexdigest())
     with open(UPLOADED, "w", encoding="utf-8") as f:
