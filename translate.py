@@ -601,7 +601,8 @@ def main():
         l.update({k: v for k, v in by_id[l["id"]].items() if k != "id"})
     if language == "en":
         for l in lines:
-            l["en"] = l["text"]
+            # Lines the LLM judged not dialogue, or a background song, are blank or ♪ in English too.
+            l["en"] = l["vi"] if l["vi"].strip() in ("", "♪") else l["text"]
 
     with open(f"{args.prefix}.subs.json", "w", encoding="utf-8") as f:
         json.dump(lines, f, ensure_ascii=False, indent=1)
