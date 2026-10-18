@@ -83,6 +83,9 @@ python run.py "/media/Movies/<folder>/<file>.mkv" [--language ko] [--context rec
 ./batch.sh jobs.txt        # many videos; one line per video: <path>|<run.py flags>
 ./status.sh jobs.txt       # one-line progress of a running batch
 python check_notes.py work/<slug>   # render every note and fail if one moves on screen
+python report.py work/<slug>        # lines, notes, voice matches, pronoun changes to check
+python probe_voice.py work/<slug> work/<show>.address.json 0:20:00 0:21:00   # who each line sounds like
+python probe_speech.py "<video>" 0:53:45 0:54:10   # large-v3 with no speech detector on a stretch
 ```
 
 - `--language` is the film's main language, optional (auto-detected). Other languages are found on their own.
