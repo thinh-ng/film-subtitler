@@ -41,16 +41,21 @@ def extract_audio(video_path, wav_path, mix_path):
     # Write to a temp name so a half-pulled file is never mistaken for a finished prefetch;
     # the centre file is renamed last, so its presence means both are complete.
     partial = wav_path + ".part"
-    if channels >= 6:
-        # Recaps, teasers and some scenes are mixed outside the centre channel.
-        pull_audio(video_path, "-ac 1", partial)
-        os.replace(partial, mix_path)
-        # Surround mixes keep dialogue alone in the centre channel; music on the others was being
-        # transcribed as dialogue and drowning out soft voices.
-        pull_audio(video_path, "-af 'pan=mono|c0=c2'", partial)
-    else:
-        pull_audio(video_path, "-ac 1", partial)
-    os.replace(partial, wav_path)
+    try:
+        if channels >= 6:
+            # Recaps, teasers and some scenes are mixed outside the centre channel.
+            pull_audio(video_path, "-ac 1", partial)
+            os.replace(partial, mix_path)
+            # Surround mixes keep dialogue alone in the centre channel; music on the others was being
+            # transcribed as dialogue and drowning out soft voices.
+            pull_audio(video_path, "-af 'pan=mono|c0=c2'", partial)
+        else:
+            pull_audio(video_path, "-ac 1", partial)
+        os.replace(partial, wav_path)
+    finally:
+        # A .part left behind makes every later run of this video wait on it forever.
+        if os.path.exists(partial):
+            os.remove(partial)
 
 
 def prefetch(video_path):
