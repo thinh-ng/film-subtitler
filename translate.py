@@ -250,10 +250,15 @@ def with_budget(line, following):
     return f"{fmt(line)}  {{{seconds:.1f}s, ≤{int(seconds * CPS)} chars}}"
 
 
-def build_bible(lines, language, context, defaults):
+def build_bible(lines, language, context, defaults, known_names):
     source = LANGUAGE_NAMES.get(language, language)
     transcript = "\n".join(fmt(l) for l in lines)
     extra = f"\nBACKGROUND PROVIDED BY THE USER (trust it):\n{context}\n" if context else ""
+    if known_names:
+        # One person under two names splits their voice profile and address defaults in two.
+        extra += ("\nCHARACTERS NAMED IN EARLIER EPISODES of this series. When one of them appears, "
+                  "use exactly this name for them everywhere in the bible:\n"
+                  + json.dumps(sorted(known_names), ensure_ascii=False) + "\n")
     if defaults:
         extra += ("\nESTABLISHED FORMS OF ADDRESS from earlier episodes of this series. Each is that "
                   "direction's default; keep it unless this episode shows a lasting change in the "
@@ -583,7 +588,8 @@ def main():
     else:
         print(f"Pass 1: building film bible from {len(lines)} {language} lines...", flush=True)
         defaults = load_defaults(args.series)
-        bible = build_bible(lines, language, context, defaults)
+        known_names = set(profiles) | {d[k] for d in defaults for k in ("from", "to")}
+        bible = build_bible(lines, language, context, defaults, known_names)
         with open(bible_path, "w", encoding="utf-8") as f:
             json.dump(bible, f, ensure_ascii=False, indent=1)
         if args.series:
