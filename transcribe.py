@@ -174,9 +174,12 @@ def assign_voices(audio_by_source, lines):
             chunk = audio[int(lines[i]["start"] * SAMPLE_RATE): int(lines[i]["end"] * SAMPLE_RATE)]
             emb = encoder.encode_batch(torch.from_numpy(chunk).unsqueeze(0)).squeeze().numpy()
             embeddings.append(emb / np.linalg.norm(emb))
-    labels = AgglomerativeClustering(
-        n_clusters=None, metric="cosine", linkage="average", distance_threshold=CLUSTER_THRESHOLD
-    ).fit_predict(np.array(embeddings))
+    # Clustering refuses fewer than two samples.
+    labels = [0] * len(embeddings)
+    if len(embeddings) > 1:
+        labels = AgglomerativeClustering(
+            n_clusters=None, metric="cosine", linkage="average", distance_threshold=CLUSTER_THRESHOLD
+        ).fit_predict(np.array(embeddings))
     for i, label in zip(embeddable, labels):
         lines[i]["voice"] = f"V{label}"
     for line in lines:
