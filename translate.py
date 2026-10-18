@@ -43,6 +43,8 @@ LIKELY_MATCH = 0.2
 MATCH_MARGIN = 0.1
 # Caps how much earlier episodes outweigh a new one, so a profile follows a voice that changes.
 MAX_PROFILE_WEIGHT = 300
+# In S03E02 every strong match the LLM rightly overrode came from a profile built on 3-6 lines.
+MIN_PROFILE_LINES = 10
 
 LANGUAGE_NAMES = {"en": "English", "ko": "Korean", "ja": "Japanese", "zh": "Mandarin Chinese",
                   "yue": "Cantonese", "no": "Norwegian", "nn": "Norwegian", "de": "German",
@@ -203,6 +205,7 @@ def save_profiles(path, profiles, episodes):
 
 def label_voice_matches(lines, embeddings, profiles):
     """Name the character a line's voice clearly matches, for the LLM to weigh."""
+    profiles = {n: p for n, p in profiles.items() if p[1] >= MIN_PROFILE_LINES}
     if len(profiles) < 2:
         return 0
     names = list(profiles)
