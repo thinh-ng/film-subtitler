@@ -343,8 +343,7 @@ def build_cues(lines, key):
 
 
 def build_note_cues(lines, key, notes):
-    """Notes get their own cues at the top of the screen, up as long as they take to read,
-    independent of the dialogue cues below."""
+    """Each note stays up as long as it takes to read, whatever the dialogue does meanwhile."""
     cues = []
     for l in sorted(lines, key=lambda l: l["start"]):
         note = notes.get(l["id"], {}).get(key, "").strip()
@@ -353,7 +352,25 @@ def build_note_cues(lines, key, notes):
         if cues:
             cues[-1]["end"] = min(cues[-1]["end"], l["start"] - CUE_GAP)
         seconds = max(NOTE_SECONDS, len(note) / CPS)
-        cues.append({"start": l["start"], "end": l["start"] + seconds, "text": f"{{\\an8}}<i>({note})</i>"})
+        cues.append({"start": l["start"], "end": l["start"] + seconds, "text": f"<i>({note})</i>"})
+    return cues
+
+
+def layer_notes(dialogue, notes):
+    """Overlapping cues jump as players restack them, so cut the timeline at every cue edge and
+    put the note above whatever dialogue is up: the dialogue stays put, the note reads as one line."""
+    points = sorted({t for c in dialogue + notes for t in (c["start"], c["end"])})
+    cues = []
+    for start, end in zip(points, points[1:]):
+        middle = (start + end) / 2
+        texts = [c["text"] for c in notes + dialogue if c["start"] <= middle < c["end"]]
+        if not texts:
+            continue
+        text = "\n".join(texts)
+        if cues and cues[-1]["text"] == text and cues[-1]["end"] == start:
+            cues[-1]["end"] = end
+        else:
+            cues.append({"start": start, "end": end, "text": text})
     return cues
 
 
@@ -392,7 +409,7 @@ def cue_text(cue):
 
 def write_srt(path, lines, key, notes):
     dialogue = [{"start": c["start"], "end": c["end"], "text": cue_text(c)} for c in build_cues(lines, key)]
-    cues = sorted(dialogue + build_note_cues(lines, key, notes), key=lambda c: c["start"])
+    cues = layer_notes(dialogue, build_note_cues(lines, key, notes))
     # The byte-order mark stops players from misreading Vietnamese as a legacy code page.
     with open(path, "w", encoding="utf-8-sig") as f:
         for n, cue in enumerate(cues, 1):

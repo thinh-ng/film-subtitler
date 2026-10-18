@@ -60,7 +60,7 @@ and [general](https://partnerhelp.netflixstudios.com/hc/en-us/articles/215758617
 | Fast speech | Each line is translated within the characters its time on screen allows. A cue stays up past the speech until it can be read; when the next line comes too soon, the two share a cue |
 | Long sentences | Cut at a comma or pause, never leaving a word or two stranded; each subtitle carries only what that part of the speech says |
 | Speakers | Cues never overlap. Two speakers in one cue get a dash each |
-| Notes | Rare, for terms a viewer would not otherwise understand. Shown on their own at the top of the screen for 6 s (or longer if needed to read them), independent of the dialogue |
+| Notes | Rare, for terms a viewer would not otherwise understand. Shown for 6 s (or longer if needed to read them) as a line above the dialogue, steady across the dialogue cues it spans; cues never overlap, so players never restack them |
 | Songs | A song a character performs in the story is translated, in italics. Background songs show as ♪ |
 | Pronouns | anh/chị means the addressee is older or senior; a clearly younger adult is cậu/cô |
 | Encoding | UTF-8 with a byte-order mark, so players don't misread Vietnamese |
@@ -100,5 +100,3 @@ Needs: the `claude` CLI logged in, ssh access to `NAS_HOST` (with ffmpeg install
 - Background songs are shown as ♪, not translated.
 - Whispered and mumbled speech is often missed. Spans the fast model leaves empty get a second try
   with full large-v3, which recovers some but not all.
-- Notes use the SRT top-of-screen tag `{\an8}`; a player that ignores it shows the note stacked
-  above the dialogue instead.
