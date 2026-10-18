@@ -10,7 +10,7 @@ line="$(date +%H:%M) done $done/$total"
 for log in work/logs/*.log; do
   case "$log" in */batch*.log|*/prefetch*.log) continue;; esac
   name=$(basename "$log" .log | cut -c1-28)
-  if grep -q "uploaded.*ai.en.srt" "$log"; then continue; fi
+  if grep -q "uploaded .*\.en\.srt" "$log"; then continue; fi
   if grep -q "Pass 2" "$log"; then
     slug=$(ls -d work/*.cache 2>/dev/null | grep -F "$(echo "$name" | sed 's/[^A-Za-z0-9]\+/_/g' | cut -c1-20)" | head -1)
     n=$(grep -o "translating [0-9]* chunks" "$log" | grep -o "[0-9]*")
