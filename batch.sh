@@ -20,8 +20,12 @@ while IFS='|' read -r video flags; do
   log="work/logs/${name:0:60}.log"
   echo "$(date +%T) START $name"
   if $PY run.py "$video" $flags --stage transcribe < /dev/null > "$log" 2>&1; then
+    # An episode reads the voice profiles and forms of address the one before it writes, and
+    # uploads share work/uploaded.json, so translations run one after another.
+    [ -n "$translating" ] && wait "$translating"
     ( $PY run.py "$video" $flags --stage translate < /dev/null >> "$log" 2>&1 \
         && echo "$(date +%T) DONE $name" || echo "$(date +%T) FAILED $name (see $log)" ) &
+    translating=$!
   else
     echo "$(date +%T) FAILED transcribe $name (see $log)"
   fi
