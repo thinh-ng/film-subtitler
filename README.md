@@ -22,9 +22,13 @@ video (on the NAS)
   │                   language) is found and transcribed again, in its own language;
   │                   low-confidence lines get the same language check; a short burst
   │                   with no words at all is kept only when recognised with high confidence
-  │                 • spots where speech recognition got stuck repeating itself, and speech
-  │                   the fast model still left empty, are redone with a slower, more
-  │                   accurate model
+  │                 • every stretch still without words is swept by the slower, more accurate
+  │                   model with no speech detector in front of it: the detector does not
+  │                   hear whispers or talk under loud noise, which that model transcribes
+  │                   once pointed at them. Only confident speech is kept. On a 68-minute
+  │                   episode this recovered 25 lines and added ~11 minutes
+  │                 • spots where speech recognition got stuck repeating itself are redone
+  │                   with the same accurate model
   ▼
   │  2. Understand  the LLM reads the WHOLE transcript once and writes a film bible:
   │                 who each character is, how they relate, which Vietnamese pronoun
@@ -98,5 +102,4 @@ Needs: the `claude` CLI logged in, ssh access to `NAS_HOST` (with ffmpeg install
 - Speech recognition is weaker for Cantonese and heavy dialects, and invents phrases over music.
   The LLM drops lines that are clearly not dialogue, so check films with long music passages.
 - Background songs are shown as ♪, not translated.
-- Whispered and mumbled speech is often missed. Spans the fast model leaves empty get a second try
-  with full large-v3, which recovers some but not all.
+- Whispers are recovered but can be misheard ("Just not Tom" came back as "Just knock down").

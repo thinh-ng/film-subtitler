@@ -39,6 +39,8 @@ BATCH_SIZE = max(1, min(16, (os.cpu_count() or 2) // 2))
 HOLE_VAD = VadOptions(threshold=0.3, min_silence_duration_ms=500, speech_pad_ms=200)
 MIN_HOLE_SECONDS = 1.5
 MAX_HOLE_SECONDS = 25.0
+MIN_SWEEP_SECONDS = 2.0
+SWEEP_CONFIDENCE = 0.5
 # Whisper writes a word for a sniff or a door as readily as for a short reply; on wordless bursts
 # real speech scored 0.83+, noise 0.56 or less.
 MIN_SHORT_CONFIDENCE = 0.7
@@ -240,6 +242,31 @@ def detect_languages(model, audio, groups, main_language):
     return languages
 
 
+def mean_probability(words):
+    return sum(w.probability for w in words) / len(words) if words else 0.0
+
+
+def sweep_gaps(audio, words, language):
+    """Transcribe every stretch with no words with large-v3 and no speech detector.
+
+    The detector gates every other pass and does not hear whispers or talk under a helicopter,
+    while large-v3 transcribes both at 0.8+ confidence once pointed at them.
+    """
+    started = time.time()
+    gaps, last = [], 0.0
+    for w in sorted(words, key=lambda w: w["start"]):
+        if w["start"] - last >= MIN_SWEEP_SECONDS:
+            gaps.extend(split_span(last, w["start"]))
+        last = max(last, w["end"])
+    if len(audio) / SAMPLE_RATE - last >= MIN_SWEEP_SECONDS:
+        gaps.extend(split_span(last, len(audio) / SAMPLE_RATE))
+    found = transcribe_spans(accurate_model(), audio, [[g] for g in gaps], language,
+                             min_confidence=SWEEP_CONFIDENCE)
+    print(f"Swept {len(gaps)} stretches without words ({sum(e - s for s, e in gaps) / 60:.1f} min) "
+          f"with large-v3 in {time.time() - started:.0f}s: kept {len(found)} words", flush=True)
+    return sorted(words + found, key=lambda w: w["start"])
+
+
 def transcribe_spans(model, audio, groups, language, source="centre", min_confidence=0.0):
     """Transcribe each group whole for context, keeping only words that land inside its spans.
 
@@ -257,6 +284,10 @@ def transcribe_spans(model, audio, groups, language, source="centre", min_confid
     for seg in segments:
         # Whisper's own test for "this was not speech"; holes are often music or breathing.
         if seg.no_speech_prob > 0.6 and seg.avg_logprob < -1.0 or is_looped(seg.text):
+            continue
+        # "Thank you." and "Subtitles by ..." invented over silence scored 0.61 or less; real
+        # speech that Whisper also doubted was speech scored 0.82+.
+        if seg.no_speech_prob > 0.6 and mean_probability(seg.words) < 0.75:
             continue
         inside = [w for w in seg.words if any(s <= (w.start + w.end) / 2 <= e for s, e in spans)]
         if inside and sum(w.probability for w in inside) / len(inside) >= min_confidence:
@@ -344,8 +375,7 @@ def main():
     model = WhisperModel("large-v3-turbo", device="cpu", compute_type="int8", cpu_threads=os.cpu_count())
     words, language = transcribe(model, audio, args.language)
     words = fill_holes(model, audio, words, language)
-    # Soft and mumbled speech turbo still left empty gets one more try with the stronger model.
-    words = fill_holes(accurate_model(), audio, words, language)
+    words = sweep_gaps(audio, words, language)
     words = recheck_doubtful(model, audio, words, language)
     words = repair_loops(audio, words, language)
     if args.mix:
