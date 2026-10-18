@@ -289,7 +289,7 @@ def transcribe_spans(model, audio, groups, language, source="centre", min_confid
     # Given no clips, the pipeline falls back to transcribing the whole audio.
     if not groups:
         return []
-    clips =[{"start": g[0][0], "end": g[-1][1]} for g in groups]
+    clips = [{"start": g[0][0], "end": g[-1][1]} for g in groups]
     spans = [span for g in groups for span in g]
     segments, _ = BatchedInferencePipeline(model).transcribe(
         audio, language=language, clip_timestamps=clips,
