@@ -31,6 +31,8 @@ CUE_GAP = 2 / 24
 PAIR_SECONDS = 0.7
 MAX_CUE_TEXTS = 2
 NOTE_SECONDS = 6.0
+# A line of only a no-break space is not blank to SRT parsers, but renders as an empty line.
+NBSP = " "
 
 LANGUAGE_NAMES = {"en": "English", "ko": "Korean", "ja": "Japanese", "zh": "Mandarin Chinese",
                   "yue": "Cantonese", "no": "Norwegian", "nn": "Norwegian", "de": "German",
@@ -358,14 +360,27 @@ def build_note_cues(lines, key, notes):
 
 def layer_notes(dialogue, notes):
     """Overlapping cues jump as players restack them, so cut the timeline at every cue edge and
-    put the note above whatever dialogue is up: the dialogue stays put, the note reads as one line."""
+    put the note above whatever dialogue is up."""
+    def height(cue):
+        return cue["text"].count("\n") + 1
+
+    def during(cue, start, end):
+        return cue["start"] < end and start < cue["end"]
+
     points = sorted({t for c in dialogue + notes for t in (c["start"], c["end"])})
     cues = []
     for start, end in zip(points, points[1:]):
         middle = (start + end) / 2
-        texts = [c["text"] for c in notes + dialogue if c["start"] <= middle < c["end"]]
-        if not texts:
+        note = next((n for n in notes if n["start"] <= middle < n["end"]), None)
+        spoken = [c for c in dialogue if c["start"] <= middle < c["end"]]
+        if not note and not spoken:
             continue
+        texts = [c["text"] for c in spoken]
+        if note:
+            # Subtitles stack from the bottom, so a shorter or missing dialogue would drop the note
+            # into its place. Blank lines hold the note at one height for its whole time on screen.
+            tallest = max((height(c) for c in dialogue if during(c, note["start"], note["end"])), default=0)
+            texts = [note["text"]] + [NBSP] * (tallest - sum(height(c) for c in spoken)) + texts
         text = "\n".join(texts)
         if cues and cues[-1]["text"] == text and cues[-1]["end"] == start:
             cues[-1]["end"] = end
