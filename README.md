@@ -91,7 +91,8 @@ python probe_speech.py "<video>" 0:53:45 0:54:10   # large-v3 with no speech det
 - `--language` is the film's main language, optional (auto-detected). Other languages are found on their own.
 - A 2-hour film takes about 15–20 minutes on its own. In a batch, audio is pulled from the NAS
   ahead of time and one film translates while the next transcribes: 9 films took about an hour.
-- Re-running resumes: finished LLM work is cached in `work/`.
+- Re-running with `--stage translate` resumes: finished LLM work is cached in `work/`. A full
+  re-run (or a batch job) transcribes again, which discards that cache.
 
 Needs: the `claude` CLI logged in, ssh access to `NAS_HOST` (with ffmpeg installed there), and the Python env in `.venv`
 (`uv venv -p 3.12 .venv && uv pip install -p .venv faster-whisper speechbrain scikit-learn soundfile torch torchaudio`).

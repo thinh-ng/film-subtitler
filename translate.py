@@ -306,12 +306,13 @@ TRANSCRIPT:
 def make_chunks(lines, bible):
     """Group by scene so each call sees whole conversations, splitting overly long scenes."""
     by_id = {l["id"]: l for l in lines}
-    chunks = []
+    chunks, covered = [], set()
     for scene in sorted(bible["scenes"], key=lambda s: s["start_line"]):
-        ids = [i for i in range(scene["start_line"], scene["end_line"] + 1) if i in by_id]
+        # The LLM's scenes can overlap; a line translated twice could come out two ways.
+        ids = [i for i in range(scene["start_line"], scene["end_line"] + 1) if i in by_id and i not in covered]
+        covered.update(ids)
         for k in range(0, len(ids), MAX_CHUNK_LINES):
             chunks.append({"ids": ids[k:k + MAX_CHUNK_LINES], "scene": scene})
-    covered = {i for c in chunks for i in c["ids"]}
     missing = [l["id"] for l in lines if l["id"] not in covered]
     for k in range(0, len(missing), MAX_CHUNK_LINES):
         chunks.append({"ids": missing[k:k + MAX_CHUNK_LINES], "scene": None})
@@ -594,12 +595,14 @@ def main():
     print(f"Pass 2: translating {len(chunks)} chunks...", flush=True)
     with ThreadPoolExecutor(PARALLEL_CALLS) as pool:
         results = list(pool.map(lambda c: translate_chunk(c, lines, bible, language, cache_dir), chunks))
-    by_id = {r["id"]: r for chunk in results for r in chunk}
+    # A chunk's answer can also translate its context lines, which belong to another chunk.
+    by_id = {r["id"]: r for chunk, result in zip(chunks, results) for r in result if r["id"] in chunk["ids"]}
     for l in lines:
         l.update({k: v for k, v in by_id[l["id"]].items() if k != "id"})
     if language == "en":
         for l in lines:
-            l["en"] = l["text"]
+            # Lines the LLM judged not dialogue, or a background song, are blank or ♪ in English too.
+            l["en"] = l["vi"] if l["vi"].strip() in ("", "♪") else l["text"]
 
     with open(f"{args.prefix}.subs.json", "w", encoding="utf-8") as f:
         json.dump(lines, f, ensure_ascii=False, indent=1)

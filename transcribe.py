@@ -62,6 +62,11 @@ def accurate_model():
     return WhisperModel("large-v3", device="cpu", compute_type="int8", cpu_threads=os.cpu_count())
 
 
+@functools.cache
+def language_scanner():
+    return WhisperModel("small", device="cpu", compute_type="int8", cpu_threads=os.cpu_count())
+
+
 def transcribe(model, audio, language):
     pipeline = BatchedInferencePipeline(model)
     segments, info = pipeline.transcribe(
@@ -174,9 +179,12 @@ def assign_voices(audio_by_source, lines):
             chunk = audio[int(lines[i]["start"] * SAMPLE_RATE): int(lines[i]["end"] * SAMPLE_RATE)]
             emb = encoder.encode_batch(torch.from_numpy(chunk).unsqueeze(0)).squeeze().numpy()
             embeddings.append(emb / np.linalg.norm(emb))
-    labels = AgglomerativeClustering(
-        n_clusters=None, metric="cosine", linkage="average", distance_threshold=CLUSTER_THRESHOLD
-    ).fit_predict(np.array(embeddings))
+    # Clustering refuses fewer than two samples.
+    labels = [0] * len(embeddings)
+    if len(embeddings) > 1:
+        labels = AgglomerativeClustering(
+            n_clusters=None, metric="cosine", linkage="average", distance_threshold=CLUSTER_THRESHOLD
+        ).fit_predict(np.array(embeddings))
     for i, label in zip(embeddable, labels):
         lines[i]["voice"] = f"V{label}"
     for line in lines:
@@ -236,11 +244,10 @@ def detect_languages(model, audio, groups, main_language):
 
     The small model settles most groups ~8x faster; only doubtful ones go to the main model.
     """
-    scanner = WhisperModel("small", device="cpu", compute_type="int8", cpu_threads=os.cpu_count())
     languages = []
     for group in groups:
         chunk = np.concatenate([audio[int(s * SAMPLE_RATE): int(e * SAMPLE_RATE)] for s, e in group])
-        language, probability, _ = scanner.detect_language(chunk)
+        language, probability, _ = language_scanner().detect_language(chunk)
         if not (is_main(language, main_language) and probability >= 0.5):
             language, probability, _ = model.detect_language(chunk)
         languages.append(main_language if probability < 0.5 or is_main(language, main_language) else language)
@@ -279,7 +286,10 @@ def transcribe_spans(model, audio, groups, language, source="centre", min_confid
     A segment's words inside the spans are dropped together when their mean probability is
     below min_confidence.
     """
-    clips = [{"start": g[0][0], "end": g[-1][1]} for g in groups]
+    # Given no clips, the pipeline falls back to transcribing the whole audio.
+    if not groups:
+        return []
+    clips =[{"start": g[0][0], "end": g[-1][1]} for g in groups]
     spans = [span for g in groups for span in g]
     segments, _ = BatchedInferencePipeline(model).transcribe(
         audio, language=language, clip_timestamps=clips,
