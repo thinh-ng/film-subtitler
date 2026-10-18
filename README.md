@@ -82,6 +82,7 @@ export NAS_HOST=user@host  # the machine holding the videos, reachable over ssh
 python run.py "/media/Movies/<folder>/<file>.mkv" [--language ko] [--context recap.txt]
 ./batch.sh jobs.txt        # many videos; one line per video: <path>|<run.py flags>
 ./status.sh jobs.txt       # one-line progress of a running batch
+python check_notes.py work/<slug>   # render every note and fail if one moves on screen
 ```
 
 - `--language` is the film's main language, optional (auto-detected). Other languages are found on their own.
