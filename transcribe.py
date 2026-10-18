@@ -62,6 +62,11 @@ def accurate_model():
     return WhisperModel("large-v3", device="cpu", compute_type="int8", cpu_threads=os.cpu_count())
 
 
+@functools.cache
+def language_scanner():
+    return WhisperModel("small", device="cpu", compute_type="int8", cpu_threads=os.cpu_count())
+
+
 def transcribe(model, audio, language):
     pipeline = BatchedInferencePipeline(model)
     segments, info = pipeline.transcribe(
@@ -239,11 +244,10 @@ def detect_languages(model, audio, groups, main_language):
 
     The small model settles most groups ~8x faster; only doubtful ones go to the main model.
     """
-    scanner = WhisperModel("small", device="cpu", compute_type="int8", cpu_threads=os.cpu_count())
     languages = []
     for group in groups:
         chunk = np.concatenate([audio[int(s * SAMPLE_RATE): int(e * SAMPLE_RATE)] for s, e in group])
-        language, probability, _ = scanner.detect_language(chunk)
+        language, probability, _ = language_scanner().detect_language(chunk)
         if not (is_main(language, main_language) and probability >= 0.5):
             language, probability, _ = model.detect_language(chunk)
         languages.append(main_language if probability < 0.5 or is_main(language, main_language) else language)
