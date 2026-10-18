@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-line batch progress: what is transcribing, what is translating, how many are done.
 cd "$(dirname "$0")"
-total=$(grep -cv '^\s*$' ${1:-work/jobs.txt})
+total=$(grep -cv '^\s*\(#\|$\)' ${1:-work/jobs.txt})
 batch_log=${2:-work/logs/batch.log}
 done=$(grep -c ' DONE ' "$batch_log")
 failed=$(grep -c 'FAILED' "$batch_log")
