@@ -14,6 +14,8 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import numpy as np
+
 MODEL = "opus"
 MAX_CHUNK_LINES = 70
 CONTEXT_LINES = 15
@@ -33,6 +35,14 @@ MAX_CUE_TEXTS = 2
 NOTE_SECONDS = 6.0
 # A line of only a no-break space is not blank to SRT parsers, but renders as an empty line.
 NBSP = " "
+# Voice match to a character's profile from earlier episodes, ahead of the next character by
+# MATCH_MARGIN. Against profiles from another episode, 215 of 218 lines at 0.4+ agreed with the
+# speaker; the Tom/Shiv lines the LLM swapped by guessing from content matched at 0.2-0.4.
+STRONG_MATCH = 0.4
+LIKELY_MATCH = 0.2
+MATCH_MARGIN = 0.1
+# Caps how much earlier episodes outweigh a new one, so a profile follows a voice that changes.
+MAX_PROFILE_WEIGHT = 300
 
 LANGUAGE_NAMES = {"en": "English", "ko": "Korean", "ja": "Japanese", "zh": "Mandarin Chinese",
                   "yue": "Cantonese", "no": "Norwegian", "nn": "Norwegian", "de": "German",
@@ -150,7 +160,83 @@ def ask(prompt, schema):
 
 def fmt(line):
     m, s = divmod(int(line["start"]), 60)
-    return f'{line["id"]} [{m:02d}:{s:02d}] {line["voice"]}: {line["text"]}'
+    match = f' ~{line["voice_match"]}' if line.get("voice_match") else ""
+    return f'{line["id"]} [{m:02d}:{s:02d}] {line["voice"]}{match}: {line["text"]}'
+
+
+VOICE_MATCH_RULE = """Some voice labels are followed by ~Name (strong) or ~Name (likely): that line's
+voice matches the voice of that character in earlier episodes of the series. (strong): that
+character speaks the line unless the dialogue makes it impossible (they are absent from the scene,
+or the speaker is named as someone else). (likely): weigh it above any guess from what the line
+says or who would usually say it."""
+
+
+def voices_path(lines_path):
+    return lines_path.removesuffix(".lines.json") + ".voices.npz"
+
+
+def profiles_path(series_path):
+    return os.path.splitext(series_path)[0] + ".voices.npz"
+
+
+def load_embeddings(lines_path):
+    if not os.path.exists(voices_path(lines_path)):
+        return {}
+    data = np.load(voices_path(lines_path))
+    return dict(zip(data["ids"].tolist(), data["embeddings"]))
+
+
+def load_profiles(path):
+    """{character: (unit voice vector, weight)} plus the episodes already folded in."""
+    if not os.path.exists(path):
+        return {}, set()
+    data = np.load(path)
+    profiles = {str(n): (v, float(w)) for n, v, w in zip(data["names"], data["vectors"], data["weights"])}
+    return profiles, set(map(str, data["episodes"]))
+
+
+def save_profiles(path, profiles, episodes):
+    names = sorted(profiles)
+    np.savez(path, names=names, vectors=np.array([profiles[n][0] for n in names]),
+             weights=[profiles[n][1] for n in names], episodes=sorted(episodes))
+
+
+def label_voice_matches(lines, embeddings, profiles):
+    """Name the character a line's voice clearly matches, for the LLM to weigh."""
+    if len(profiles) < 2:
+        return 0
+    names = list(profiles)
+    vectors = np.array([profiles[n][0] for n in names])
+    matched = 0
+    for line in lines:
+        if line["id"] not in embeddings:
+            continue
+        scores = vectors @ embeddings[line["id"]]
+        second, best = np.sort(scores)[-2:]
+        if best >= LIKELY_MATCH and best - second >= MATCH_MARGIN:
+            strength = "strong" if best >= STRONG_MATCH else "likely"
+            line["voice_match"] = f"{names[int(np.argmax(scores))]} ({strength})"
+            matched += 1
+    return matched
+
+
+def update_profiles(profiles, lines, embeddings, bible):
+    """Fold in this episode's lines whose speaker the voice clustering and the LLM agree on."""
+    sure = {v["voice"]: v["character"] for v in bible["voice_map"] if v["confidence"] == "high"}
+    by_speaker = {}
+    for line in lines:
+        if (line["id"] in embeddings and line["end"] - line["start"] >= 2.0
+                and sure.get(line["voice"]) == line.get("speaker")):
+            by_speaker.setdefault(line["speaker"], []).append(embeddings[line["id"]])
+    updated = []
+    for name, vectors in by_speaker.items():
+        if len(vectors) < 3:
+            continue
+        old, weight = profiles.get(name, (0, 0.0))
+        total = old * weight + np.sum(vectors, axis=0)
+        profiles[name] = (total / np.linalg.norm(total), min(weight + len(vectors), MAX_PROFILE_WEIGHT))
+        updated.append(name)
+    return sorted(updated)
 
 
 def with_budget(line, following):
@@ -173,7 +259,8 @@ def build_bible(lines, language, context, defaults):
 line is `id [mm:ss] voice: text`. The transcript has recognition errors; infer what was meant. Some
 lines may be in another language (a character switching languages); they get translated too.
 Voice labels come from automatic voice clustering and are noisy — one label can merge similar
-voices, one person can be split across labels, V? means unknown. Song lyrics, TV audio or
+voices, one person can be split across labels, V? means unknown.
+{VOICE_MATCH_RULE} Song lyrics, TV audio or
 background speech may appear.
 {extra}
 Read the WHOLE transcript first, then build a "film bible" that subtitlers translating into
@@ -269,6 +356,7 @@ For EVERY line to translate, in order:
   new speaker is named or addressed, someone greets or hands over, the scene cuts, or a voice
   label maps to them with high confidence. Topic, apparent location and low-confidence voice
   labels are not evidence; a phone call is one conversation.
+  {VOICE_MATCH_RULE}
 - addressee: who they are speaking to (may differ from the previous speaker; "self", "group" or
   "unknown" are allowed).
 - pair: the Vietnamese self-term/other-term used, from the bible's `address` for that direction
@@ -477,6 +565,12 @@ def main():
     context = open(args.context, encoding="utf-8").read() if args.context else ""
     cache_dir = f"{args.prefix}.cache"
     os.makedirs(cache_dir, exist_ok=True)
+    embeddings = load_embeddings(args.lines)
+    profiles, episodes = load_profiles(profiles_path(args.series)) if args.series else ({}, set())
+    matched = label_voice_matches(lines, embeddings, profiles)
+    if profiles:
+        print(f"Voice profiles for {len(profiles)} characters matched {matched} of {len(lines)} lines",
+              flush=True)
 
     bible_path = f"{args.prefix}.bible.json"
     if os.path.exists(bible_path):
@@ -513,6 +607,11 @@ def main():
     with open(f"{args.prefix}.report.txt", "w", encoding="utf-8") as f:
         f.write("\n".join(report) or "No pronoun-pair changes.")
     print(f"Pass 3: {len(report)} pronoun-pair changes flagged. Done.")
+    episode = os.path.basename(args.prefix)
+    if args.series and embeddings and episode not in episodes:
+        updated = update_profiles(profiles, lines, embeddings, bible)
+        save_profiles(profiles_path(args.series), profiles, episodes | {episode})
+        print(f"Voice profiles updated for {len(updated)} characters", flush=True)
 
 
 if __name__ == "__main__":

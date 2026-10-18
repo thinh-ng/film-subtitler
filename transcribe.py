@@ -52,6 +52,10 @@ DOUBTFUL_CONFIDENCE = 0.65
 SAME_LANGUAGE = [{"zh", "yue"}]
 
 
+def voices_path(lines_path):
+    return lines_path.removesuffix(".lines.json") + ".voices.npz"
+
+
 @functools.cache
 def accurate_model():
     """Full large-v3: several times slower than turbo, so only for spans turbo got wrong or missed."""
@@ -177,6 +181,7 @@ def assign_voices(audio_by_source, lines):
         lines[i]["voice"] = f"V{label}"
     for line in lines:
         line.setdefault("voice", "V?")
+    return dict(zip(embeddable, embeddings))
 
 
 def find_holes(audio, words):
@@ -389,13 +394,16 @@ def main():
         del line["p"]
     print(f"{len(lines)} lines ({language}, {sum(l['source'] == 'mix' for l in lines)} from the full mix). "
           "Clustering voices...", flush=True)
-    assign_voices(audio_by_source, lines)
+    embeddings = assign_voices(audio_by_source, lines)
     for line in lines:
         del line["source"]
     for n, line in enumerate(lines, 1):
         line["id"] = n
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump({"language": language, "lines": lines}, f, ensure_ascii=False, indent=1)
+    # Kept so translation can match each line's voice to the characters of earlier episodes.
+    np.savez(voices_path(args.out), ids=[lines[i]["id"] for i in embeddings],
+             embeddings=np.array(list(embeddings.values())))
     print(f"Done: {len(lines)} lines, {len({l['voice'] for l in lines})} voice labels")
 
 

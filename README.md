@@ -38,6 +38,12 @@ video (on the NAS)
   │  3. Translate   scene by scene, with the bible attached: for every line decide
   │                 speaker → addressee → pronoun pair, then write the subtitle in
   │                 Vietnamese (and English, straight from the original language)
+  │                 • with --series, each line's voice is matched against voice profiles of
+  │                   the show's characters from earlier episodes, and the LLM is told who it
+  │                   sounds like; the profiles are updated after each episode. Without them
+  │                   the LLM only had anonymous voice labels and, where those were unclear,
+  │                   guessed the speaker from what the line said: a husband and wife's lines
+  │                   came out swapped
   ▼
   │  4. Check       flag every place a pronoun pair changes so a human can confirm it
   ▼
@@ -93,6 +99,8 @@ Needs: the `claude` CLI logged in, ssh access to `NAS_HOST` (with ffmpeg install
 - `*.subs.json` — every line with speaker, addressee, pronoun pair and translations.
 - `<series>.address.json` — with `--series`, each pair's default form of address, carried from
   one episode to the next.
+- `<series>.address.voices.npz` — with `--series`, the voice profile of each recurring character.
+- `*.voices.npz` — each line's voice fingerprint, for matching against those profiles.
 - `*.report.txt` — pronoun changes to double-check.
 
 ## Limits
