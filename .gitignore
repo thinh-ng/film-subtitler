@@ -6,3 +6,5 @@ __pycache__/
 *.wav
 *.part
 .claude/worktrees/
+
+.claude/
